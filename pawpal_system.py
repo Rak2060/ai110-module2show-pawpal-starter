@@ -187,12 +187,18 @@ class ScheduleItem:
 
 
 @dataclass
+class SkippedTask:
+	task_id: str
+	reason: str
+
+
+@dataclass
 class DailyPlan:
 	plan_id: str
 	owner_id: str
 	date: date
 	scheduled_items: List[ScheduleItem] = field(default_factory=list)
-	skipped_tasks: List[Dict[str, str]] = field(default_factory=list)
+	skipped_tasks: List[SkippedTask] = field(default_factory=list)
 
 	@property
 	def total_planned_minutes(self) -> int:
@@ -202,11 +208,17 @@ class DailyPlan:
 		)
 
 	def add_item(self, task: Task, start_at: datetime, reason: str = "") -> ScheduleItem:
+		end_at = start_at + timedelta(minutes=task.duration_min)
+		for existing in self.scheduled_items:
+			has_overlap = start_at < existing.end_at and end_at > existing.start_at
+			if has_overlap:
+				raise ValueError("Schedule item overlaps an existing task block.")
+
 		item = ScheduleItem(
 			schedule_item_id=f"item-{uuid4().hex[:8]}",
 			task_id=task.task_id,
 			start_at=start_at,
-			end_at=start_at + timedelta(minutes=task.duration_min),
+			end_at=end_at,
 			reason=reason,
 		)
 		self.scheduled_items.append(item)
@@ -214,7 +226,7 @@ class DailyPlan:
 		return item
 
 	def mark_skipped(self, task: Task, reason: str) -> None:
-		self.skipped_tasks.append({"task_id": task.task_id, "reason": reason})
+		self.skipped_tasks.append(SkippedTask(task_id=task.task_id, reason=reason))
 		task.status = TaskStatus.SKIPPED
 
 
@@ -222,18 +234,43 @@ class Scheduler:
 	"""Service class responsible for generating daily plans."""
 
 	def build_plan(self, user: User, pets: List[Pet], tasks: List[Task], day: date) -> DailyPlan:
-		# TODO: Replace this stub with full scheduling logic.
-		del pets
-		return DailyPlan(plan_id=f"plan-{uuid4().hex[:8]}", owner_id=user.user_id, date=day)
+		plan = DailyPlan(plan_id=f"plan-{uuid4().hex[:8]}", owner_id=user.user_id, date=day)
+		owned_pet_ids = {pet.pet_id for pet in pets if pet.owner_id == user.user_id}
+		now = datetime.combine(day, datetime.min.time())
+		relevant_tasks = [
+			task
+			for task in tasks
+			if task.pet_id in owned_pet_ids and task.status == TaskStatus.PENDING
+		]
+
+		ranked_tasks = sorted(
+			relevant_tasks,
+			key=lambda task: (task.is_required, self.score_task(task, now)),
+			reverse=True,
+		)
+
+		next_start = now
+		for task in ranked_tasks:
+			if not self.can_fit(task, plan, user):
+				plan.mark_skipped(task, "Not enough time left in daily budget.")
+				continue
+
+			plan.add_item(task, next_start, reason="Selected by priority/requirement ranking.")
+			next_start = next_start + timedelta(minutes=task.duration_min)
+
+		return plan
 
 	def score_task(self, task: Task, now: Optional[datetime] = None) -> float:
-		del now
 		priority_map = {Priority.LOW: 1, Priority.MEDIUM: 2, Priority.HIGH: 3}
 		required_bonus = 3 if task.is_required else 0
-		return float(priority_map[task.priority] + required_bonus - (task.duration_min / 60.0))
+		urgency_bonus = 0.0
+		if now is not None and task.due_by is not None:
+			hours_until_due = max((task.due_by - now).total_seconds() / 3600.0, 0.0)
+			urgency_bonus = max(0.0, 2.0 - min(hours_until_due / 12.0, 2.0))
+		return float(priority_map[task.priority] + required_bonus + urgency_bonus - (task.duration_min / 60.0))
 
-	def can_fit(self, task: Task, plan: DailyPlan) -> bool:
-		return plan.total_planned_minutes + task.duration_min >= 0
+	def can_fit(self, task: Task, plan: DailyPlan, user: User) -> bool:
+		return (plan.total_planned_minutes + task.duration_min) <= user.daily_time_budget_min
 
 	def explain_plan(self, plan: DailyPlan) -> List[str]:
 		explanations: List[str] = []
@@ -243,6 +280,6 @@ class Scheduler:
 			)
 		for skipped in plan.skipped_tasks:
 			explanations.append(
-				f"Task {skipped['task_id']} skipped: {skipped['reason']}"
+				f"Task {skipped.task_id} skipped: {skipped.reason}"
 			)
 		return explanations
