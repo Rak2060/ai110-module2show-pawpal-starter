@@ -1,6 +1,21 @@
 # PawPal+ Project Reflection
 
 ## 1. System Design
+Three core actions user should be able to perform:
+    i) Make a pet profile with all its information
+    ii) Schedule an evening walk in the nearby park
+    iii) View today's tasks related to each pet
+
+Objects needed for system:
+    i) User ID
+        (attributes: name, email, password, pet_list[] ; methods: createProfile(), editProfile())
+    ii) Pet Class
+        (attributes: petId, name, breed, physicalDetails (dictionary) ; methods: editData(), updateMedHistory(), summarizeData())
+    iii) Task Class
+        (attributes: taskId, petId, timeRequired ; methods: createTask(), editTask(), isCompleted(), checkAvailaility())
+    iv) Reminder Class
+        (attributes: taskId, petId, reminderId, time, frequency, status ; methods: sendReminder(), createReminder(), editReminder(), snooze())
+
 
 **a. Initial design**
 
